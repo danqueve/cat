@@ -58,11 +58,20 @@ if ($colsExist['grupo_id']) {
 <!DOCTYPE html>
 <html lang="es">
 <head>
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-BZJ1R8XXVB"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-BZJ1R8XXVB');
+    </script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Imperio Comercial - Catálogo</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/styles.css">
 </head>
 
@@ -132,6 +141,7 @@ if ($colsExist['grupo_id']) {
                 <input type="text" id="search-input" placeholder="¿Qué buscás?"
                        class="admin-input rounded-2xl py-3.5 pl-12 pr-4 text-base md:text-lg">
             </div>
+            <div id="search-results-count" class="text-xs mb-3 hidden" style="color: var(--text-secondary)"></div>
             <div id="search-results" class="grid grid-cols-2 md:grid-cols-3 gap-3 md:gap-4 overflow-y-auto pb-20"></div>
         </div>
 
@@ -244,11 +254,16 @@ if ($colsExist['grupo_id']) {
         gallery:    [],
         galleryIdx: 0,
         PAGE_SIZE:  20,
+        _sheetFlyer: null,
 
         init() { this.render(); this.setupListeners(); },
 
         setupListeners() {
-            document.getElementById('search-input').addEventListener('input', e => this.performSearch(e.target.value));
+            let _searchDebounce;
+            document.getElementById('search-input').addEventListener('input', e => {
+                clearTimeout(_searchDebounce);
+                _searchDebounce = setTimeout(() => this.performSearch(e.target.value), 300);
+            });
             // Swipe en lightbox
             let tsX = 0;
             document.getElementById('lightbox').addEventListener('touchstart', e => { tsX = e.touches[0].clientX; }, { passive: true });
@@ -279,6 +294,83 @@ if ($colsExist['grupo_id']) {
             else            { this.state.favorites.splice(idx, 1); this.showToast('Eliminado de favoritos'); }
             localStorage.setItem('ic_favs', JSON.stringify(this.state.favorites));
             this.render();
+        },
+
+        // ── Bottom Sheet ──────────────────────────────────────────
+        openProductSheet(flyerId) {
+            const f = DB.flyers.find(f => String(f.id) === String(flyerId));
+            if (!f) return;
+            this._sheetFlyer = f;
+
+            document.getElementById('sheet-img').src = f.imagen_url;
+            document.getElementById('sheet-title').textContent = f.titulo;
+
+            const descEl = document.getElementById('sheet-desc');
+            if (f.descripcion) { descEl.textContent = f.descripcion; descEl.classList.remove('hidden'); }
+            else { descEl.classList.add('hidden'); }
+
+            const priceEl = document.getElementById('sheet-price-box');
+            if (f.precio_cuota && parseFloat(f.precio_cuota) > 0) {
+                document.getElementById('sheet-cuota').textContent =
+                    (f.cantidad_cuotas ? `${f.cantidad_cuotas}x ` : '') +
+                    '$' + Number(f.precio_cuota).toLocaleString('es-AR');
+                document.getElementById('sheet-total').textContent =
+                    f.cantidad_cuotas
+                        ? `Total: $${(f.precio_cuota * f.cantidad_cuotas).toLocaleString('es-AR')}`
+                        : '';
+                priceEl.classList.remove('hidden');
+            } else {
+                priceEl.classList.add('hidden');
+            }
+
+            document.getElementById('sheet-sinstock').classList.toggle('hidden', f.sin_stock != 1);
+
+            const grupoImgs = f.grupo_id ? DB.allImages.filter(img => img.grupo_id == f.grupo_id) : [];
+            const galleryBtn = document.getElementById('sheet-gallery-btn');
+            if (grupoImgs.length > 1) {
+                document.getElementById('sheet-gallery-count').textContent = `${grupoImgs.length} fotos`;
+                galleryBtn.classList.remove('hidden');
+            } else {
+                galleryBtn.classList.add('hidden');
+            }
+
+            const sheet = document.getElementById('product-sheet');
+            sheet.classList.remove('hidden');
+            requestAnimationFrame(() => {
+                document.getElementById('sheet-panel').style.transform = 'translateY(0)';
+            });
+        },
+
+        closeSheet(event) {
+            if (event && event.target.id !== 'product-sheet') return;
+            document.getElementById('sheet-panel').style.transform = 'translateY(100%)';
+            setTimeout(() => {
+                document.getElementById('product-sheet').classList.add('hidden');
+                document.getElementById('sheet-img').src = '';
+                this._sheetFlyer = null;
+            }, 370);
+        },
+
+        sheetWhatsApp() {
+            const f = this._sheetFlyer;
+            if (!f) return;
+            const num = '<?= WA_NUM ?>';
+            const msg = `Hola! Vi este producto en Imperio Comercial:\n*${f.titulo}*\n¿Me podés dar más información?`;
+            window.open(`https://wa.me/${num}?text=${encodeURIComponent(msg)}`, '_blank');
+        },
+
+        sheetShare() {
+            const f = this._sheetFlyer;
+            if (f) this.shareProduct(f.titulo, f.imagen_url);
+        },
+
+        openLightboxFromSheet() {
+            const f = this._sheetFlyer;
+            if (!f) return;
+            document.getElementById('sheet-panel').style.transform = 'translateY(100%)';
+            document.getElementById('product-sheet').classList.add('hidden');
+            this._sheetFlyer = null;
+            this.openLightbox(f.id);
         },
 
         // ── Lightbox / Galería ────────────────────────────────────
@@ -385,11 +477,30 @@ if ($colsExist['grupo_id']) {
         },
 
         performSearch(query) {
-            const div = document.getElementById('search-results');
-            if (!query.trim()) { div.innerHTML = ''; return; }
+            const div      = document.getElementById('search-results');
+            const countDiv = document.getElementById('search-results-count');
+            if (!query.trim()) { div.innerHTML = ''; countDiv.classList.add('hidden'); return; }
             const q = query.toLowerCase();
-            const r = DB.flyers.filter(f => f.titulo.toLowerCase().includes(q));
-            div.innerHTML = r.map(f => this.createFlyerHTML(f, false)).join('');
+            const r = DB.flyers.filter(f =>
+                f.titulo.toLowerCase().includes(q) ||
+                (f.descripcion && f.descripcion.toLowerCase().includes(q))
+            );
+            countDiv.textContent = `${r.length} resultado${r.length !== 1 ? 's' : ''} para "${query}"`;
+            countDiv.classList.remove('hidden');
+            if (r.length === 0) {
+                const safeQ = query.replace(/'/g, "\\'");
+                div.innerHTML = `
+                <div class="col-span-2 py-16 text-center">
+                    <i class="fa-solid fa-magnifying-glass text-4xl mb-3 opacity-40" style="color: var(--text-muted)"></i>
+                    <p class="font-semibold mb-4" style="color: var(--text-secondary)">No encontramos "${query}"</p>
+                    <button onclick="app.contactWhatsApp('${safeQ}'); app.toggleSearch(false)"
+                            class="btn-warm px-6 py-2.5 text-sm inline-flex items-center gap-2">
+                        <i class="fa-brands fa-whatsapp"></i> Consultar por WhatsApp
+                    </button>
+                </div>`;
+            } else {
+                div.innerHTML = r.map(f => this.createFlyerHTML(f, false)).join('');
+            }
         },
 
         contactWhatsApp(item = null) {
@@ -399,18 +510,22 @@ if ($colsExist['grupo_id']) {
         },
 
         // ── Tarjeta de Flyer ──────────────────────────────────────
-        createFlyerHTML(f, showShare = true) {
+        createFlyerHTML(f, showActions = true) {
             const isFav       = this.state.favorites.includes(String(f.id));
             const isSinStock  = f.sin_stock  == 1;
             const isDestacado = f.destacado  == 1;
             const grupoImgs   = f.grupo_id ? DB.allImages.filter(img => img.grupo_id == f.grupo_id) : [];
             const imgCount    = grupoImgs.length;
+            const safeTitle   = f.titulo.replace(/'/g, "\\'");
+            const clickAction = isSinStock
+                ? `app.contactWhatsApp('Quiero que me avisen cuando haya stock de: ${safeTitle}')`
+                : `app.openProductSheet('${f.id}')`;
 
             return `
             <div class="glass-card product-card-wrap overflow-hidden group flex flex-col h-full"
                  style="${isDestacado ? 'border-color: rgba(251,191,36,0.3)' : ''}">
-                <div class="flyer-card relative cursor-pointer" style="background-image:url('${f.imagen_url}')"
-                     onclick="app.openLightbox('${f.id}')">
+                <div class="flyer-card relative cursor-pointer ${isSinStock ? 'opacity-60' : ''}"
+                     style="background-image:url('${f.imagen_url}')" onclick="${clickAction}">
                     <div class="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent opacity-60"></div>
 
                     ${isSinStock ? `
@@ -435,14 +550,21 @@ if ($colsExist['grupo_id']) {
                     </button>
                 </div>
 
-                <div class="p-3 flex flex-col flex-1 gap-2">
+                <div class="p-3 flex flex-col flex-1 gap-1.5">
                     <p class="text-[10px] font-bold uppercase tracking-widest gradient-text">Oferta</p>
                     <h4 class="font-bold text-sm truncate" style="font-family: var(--font-heading); color: var(--text-primary)">${f.titulo}</h4>
-                    ${showShare ? `
-                    <button onclick="event.stopPropagation(); app.shareProduct('${f.titulo.replace(/'/g,"\\'")}','${f.imagen_url}')"
-                        class="mt-auto w-full py-2 rounded-xl font-semibold text-xs transition flex items-center justify-center gap-2 active:scale-95"
-                        style="background: rgba(37,211,102,0.12); color: #34d399; border: 1px solid rgba(37,211,102,0.2)">
-                        <i class="fa-brands fa-whatsapp"></i> Compartir
+                    ${f.descripcion ? `<p class="text-xs line-clamp-2" style="color: var(--text-secondary)">${f.descripcion}</p>` : ''}
+                    ${f.precio_cuota && parseFloat(f.precio_cuota) > 0 ? `
+                    <div class="pt-1.5 mt-auto border-t" style="border-color: var(--border-subtle)">
+                        <span class="gradient-text font-bold text-sm">
+                            ${f.cantidad_cuotas ? `${f.cantidad_cuotas}x ` : ''}$${Number(f.precio_cuota).toLocaleString('es-AR')}
+                        </span>
+                    </div>` : ''}
+                    ${showActions && isSinStock ? `
+                    <button onclick="event.stopPropagation(); app.contactWhatsApp('Quiero que me avisen cuando haya stock de: ${safeTitle}')"
+                            class="mt-1 w-full py-2 rounded-xl font-semibold text-xs transition flex items-center justify-center gap-2 active:scale-95"
+                            style="background: rgba(249,115,22,0.1); border: 1px solid rgba(249,115,22,0.2); color: var(--warm-500)">
+                        <i class="fa-solid fa-bell"></i> Avisar cuando haya stock
                     </button>` : ''}
                 </div>
             </div>`;
@@ -525,7 +647,8 @@ if ($colsExist['grupo_id']) {
                             <h4 class="font-bold text-base truncate" style="font-family: var(--font-heading); color: var(--text-primary)">${c.nombre}</h4>
                             <p class="text-xs transition" style="color: var(--text-secondary)">Ver productos</p>
                         </div>
-                        <i class="fa-solid fa-chevron-right cat-chevron ml-2" style="color: var(--text-muted)"></i>
+                        ${c.producto_count > 0 ? `<span class="text-xs px-2 py-0.5 rounded-full shrink-0" style="background: var(--bg-card); color: var(--text-muted)">${c.producto_count}</span>` : ''}
+                        <i class="fa-solid fa-chevron-right cat-chevron ml-1" style="color: var(--text-muted)"></i>
                     </div>`).join('')}
                 </div>
             </div>`;
