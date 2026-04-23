@@ -12,4 +12,6 @@ if ($conn->connect_error) {
 
 // Soporte para caracteres especiales (tildes, eñes, emojis)
 $conn->set_charset("utf8mb4");
+
+define('WA_NUM', '+5493815447588');
 ?>

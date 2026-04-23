@@ -19,11 +19,15 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && empty($_POST) && empty($_FILES) && i
 
 // Agregar columnas nuevas si no existen
 $setupCols = [
-    'orden'        => 'INT DEFAULT 0',
-    'destacado'    => 'TINYINT(1) NOT NULL DEFAULT 0',
-    'sin_stock'    => 'TINYINT(1) NOT NULL DEFAULT 0',
-    'grupo_id'     => 'INT NULL',
-    'es_principal' => 'TINYINT(1) NOT NULL DEFAULT 1',
+    'orden'           => 'INT DEFAULT 0',
+    'destacado'       => 'TINYINT(1) NOT NULL DEFAULT 0',
+    'sin_stock'       => 'TINYINT(1) NOT NULL DEFAULT 0',
+    'grupo_id'        => 'INT NULL',
+    'es_principal'    => 'TINYINT(1) NOT NULL DEFAULT 1',
+    'precio_cuota'    => 'DECIMAL(10,2) NULL',
+    'cantidad_cuotas' => 'INT NULL',
+    'descripcion'     => 'VARCHAR(300) NULL',
+    'visible'         => 'TINYINT(1) NOT NULL DEFAULT 1',
 ];
 foreach ($setupCols as $col => $def) {
     $r = $conn->query("SHOW COLUMNS FROM flyers LIKE '$col'");
@@ -49,13 +53,50 @@ if (isset($_POST['eliminar_flyer'])) {
     } else { $msg = "❌ Flyer no encontrado."; $msg_type = "error"; }
 }
 
-// ── EDITAR TÍTULO FLYER ─────────────────────────────────────────
+// ── EDITAR FLYER (título + descripción + precio) ────────────────
 if (isset($_POST['editar_flyer'])) {
     $id     = (int)$_POST['flyer_id'];
     $titulo = $conn->real_escape_string(trim($_POST['titulo']));
-    if ($conn->query("UPDATE flyers SET titulo = '$titulo' WHERE id = $id")) {
-        $msg = "✅ Título actualizado."; $msg_type = "success";
+    $desc   = $conn->real_escape_string(trim($_POST['descripcion'] ?? ''));
+    $cuota  = !empty($_POST['precio_cuota'])    ? (float)$_POST['precio_cuota']    : 'NULL';
+    $cuotas = !empty($_POST['cantidad_cuotas']) ? (int)$_POST['cantidad_cuotas']   : 'NULL';
+    $cuota_sql  = ($cuota  === 'NULL') ? 'NULL' : $cuota;
+    $cuotas_sql = ($cuotas === 'NULL') ? 'NULL' : $cuotas;
+    $desc_sql   = empty($desc) ? 'NULL' : "'$desc'";
+    if ($conn->query("UPDATE flyers SET titulo='$titulo', descripcion=$desc_sql, precio_cuota=$cuota_sql, cantidad_cuotas=$cuotas_sql WHERE id=$id")) {
+        $msg = "✅ Producto actualizado."; $msg_type = "success";
     } else { $msg = "❌ Error: " . $conn->error; $msg_type = "error"; }
+}
+
+// ── TOGGLE VISIBLE ──────────────────────────────────────────────
+if (isset($_POST['toggle_visible'])) {
+    $id = (int)$_POST['flyer_id'];
+    $conn->query("UPDATE flyers SET visible = 1 - visible WHERE id = $id");
+    $msg = "✅ Visibilidad actualizada."; $msg_type = "success";
+}
+
+// ── BULK ACTIONS ────────────────────────────────────────────────
+if (isset($_POST['bulk_action']) && !empty($_POST['sel'])) {
+    $sel_ids = array_map('intval', (array)$_POST['sel']);
+    $in      = implode(',', $sel_ids);
+    $action  = $_POST['bulk_action'];
+    if ($action === 'delete') {
+        $rows = $conn->query("SELECT imagen_url FROM flyers WHERE id IN ($in)");
+        while ($r = $rows->fetch_assoc()) {
+            if (!empty($r['imagen_url']) && file_exists($r['imagen_url'])) unlink($r['imagen_url']);
+        }
+        $conn->query("DELETE FROM flyers WHERE id IN ($in)");
+        $msg = "✅ " . count($sel_ids) . " producto(s) eliminados."; $msg_type = "success";
+    } elseif ($action === 'hide') {
+        $conn->query("UPDATE flyers SET visible=0 WHERE id IN ($in)");
+        $msg = "✅ " . count($sel_ids) . " producto(s) ocultados."; $msg_type = "success";
+    } elseif ($action === 'show') {
+        $conn->query("UPDATE flyers SET visible=1 WHERE id IN ($in)");
+        $msg = "✅ " . count($sel_ids) . " producto(s) visibles."; $msg_type = "success";
+    } elseif ($action === 'feature') {
+        $conn->query("UPDATE flyers SET destacado=1 WHERE id IN ($in)");
+        $msg = "✅ " . count($sel_ids) . " producto(s) destacados."; $msg_type = "success";
+    }
 }
 
 // ── REORDENAR FLYER ─────────────────────────────────────────────
@@ -131,6 +172,12 @@ if (isset($_POST['toggle_sin_stock'])) {
 if (isset($_POST['subir_flyer'])) {
     $titulo     = $conn->real_escape_string($_POST['titulo']);
     $cat_id     = (int)$_POST['categoria_id'];
+    $desc_up    = $conn->real_escape_string(trim($_POST['descripcion'] ?? ''));
+    $cuota_up   = !empty($_POST['precio_cuota'])    ? (float)$_POST['precio_cuota']  : null;
+    $cuotas_up  = !empty($_POST['cantidad_cuotas']) ? (int)$_POST['cantidad_cuotas'] : null;
+    $desc_sql   = empty($desc_up)  ? 'NULL' : "'$desc_up'";
+    $cuota_sql  = ($cuota_up  === null) ? 'NULL' : $cuota_up;
+    $cuotas_sql = ($cuotas_up === null) ? 'NULL' : $cuotas_up;
     $target_dir = "uploads/";
     if (!file_exists($target_dir)) mkdir($target_dir, 0777, true);
     $success_count = 0; $error_count = 0; $error_details = "";
@@ -164,7 +211,7 @@ if (isset($_POST['subir_flyer'])) {
                                 $extra_cols = ", es_principal";
                                 $extra_vals = ", 1";
                             }
-                            if ($conn->query("INSERT INTO flyers (categoria_id,titulo,imagen_url,orden$extra_cols) VALUES ($cat_id,'$titulo','$newfile',$new_orden$extra_vals)")) {
+                            if ($conn->query("INSERT INTO flyers (categoria_id,titulo,imagen_url,orden,descripcion,precio_cuota,cantidad_cuotas$extra_cols) VALUES ($cat_id,'$titulo','$newfile',$new_orden,$desc_sql,$cuota_sql,$cuotas_sql$extra_vals)")) {
                                 $success_count++;
                                 if ($is_first && $total_files > 1) {
                                     $grupo_id_batch = $conn->insert_id;
@@ -187,12 +234,29 @@ if (isset($_POST['subir_flyer'])) {
     }
 }
 
+// ── REORDENAR FLYER (DRAG & DROP AJAX) ────────────────────────
+if (isset($_POST['action']) && $_POST['action'] === 'reorder' && !empty($_POST['ids'])) {
+    $ids = array_map('intval', explode(',', $_POST['ids']));
+    foreach ($ids as $orden => $id) {
+        $conn->query("UPDATE flyers SET orden=$orden WHERE id=$id");
+    }
+    header('Content-Type: application/json');
+    echo json_encode(['success' => true]);
+    exit;
+}
+
 // ── CONSULTAS DE DISPLAY ─────────────────────────────────────────
-$page       = max(1, (int)($_GET['page'] ?? 1));
-$per_page   = 20;
-$offset     = ($page - 1) * $per_page;
-$cat_filter = (int)($_GET['cat'] ?? 0);
-$where      = $cat_filter ? "WHERE flyers.categoria_id = $cat_filter" : "";
+$page        = max(1, (int)($_GET['page'] ?? 1));
+$per_page    = 20;
+$offset      = ($page - 1) * $per_page;
+$cat_filter  = (int)($_GET['cat'] ?? 0);
+$vis_filter  = isset($_GET['vis']) ? (int)$_GET['vis'] : -1; // -1=todos, 0=ocultos, 1=visibles
+$q_search    = $conn->real_escape_string(trim($_GET['q'] ?? ''));
+$where_parts = [];
+if ($cat_filter) $where_parts[] = "flyers.categoria_id = $cat_filter";
+if ($vis_filter >= 0) $where_parts[] = "flyers.visible = $vis_filter";
+if ($q_search)   $where_parts[] = "flyers.titulo LIKE '%$q_search%'";
+$where = $where_parts ? "WHERE " . implode(' AND ', $where_parts) : "";
 $total_r    = $conn->query("SELECT COUNT(*) as t FROM flyers $where");
 $total_fly  = (int)$total_r->fetch_assoc()['t'];
 $total_pages= max(1, ceil($total_fly / $per_page));
@@ -204,6 +268,11 @@ $all_flyers = $conn->query(
      $where ORDER BY flyers.orden ASC, flyers.id DESC
      LIMIT $per_page OFFSET $offset"
 );
+
+// ── STAT COUNTS ──────────────────────────────────────────────────
+$stat_flyers    = (int)$conn->query("SELECT COUNT(*) FROM flyers")->fetch_row()[0];
+$stat_cats      = (int)$conn->query("SELECT COUNT(*) FROM categorias")->fetch_row()[0];
+$stat_destacados= (int)$conn->query("SELECT COUNT(*) FROM flyers WHERE destacado=1")->fetch_row()[0];
 
 $cats_res  = $conn->query("SELECT *, (SELECT COUNT(*) FROM flyers WHERE categoria_id=categorias.id) as flyer_count FROM categorias ORDER BY nombre ASC");
 $cats_list = [];
@@ -257,41 +326,71 @@ $COLORS = [
     <title>Admin - Imperio Comercial</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/styles.css">
     <style>
-        body { font-family: 'Plus Jakarta Sans', sans-serif; }
-        .icon-btn.active  { box-shadow: 0 0 0 2px #a855f7; background: #374151; color: white; }
-        .color-dot.active { box-shadow: 0 0 0 3px white, 0 0 0 5px #a855f7; transform: scale(1.1); }
-        .modal-bg { backdrop-filter: blur(4px); }
+        body { font-family: var(--font-body); background: var(--bg-base); color: var(--text-primary); }
+        .icon-btn.active  { box-shadow: 0 0 0 2px #F97316; background: rgba(249,115,22,0.15); color: white; }
+        .color-dot.active { box-shadow: 0 0 0 3px rgba(255,255,255,0.5), 0 0 0 5px #F97316; transform: scale(1.1); }
+        .modal-bg { backdrop-filter: blur(8px); }
+        select, input[type="text"], input[type="password"] {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.10);
+            color: var(--text-primary);
+        }
+        select option { background: #1A1A2E; }
+        select:focus, input[type="text"]:focus { border-color: var(--warm-500); outline: none; box-shadow: 0 0 0 3px rgba(249,115,22,0.15); }
     </style>
 </head>
-<body class="bg-slate-950 text-slate-200 min-h-screen p-4 md:p-8">
+<body class="min-h-screen p-4 md:p-8">
 
 <div class="max-w-5xl mx-auto">
 
     <!-- ── HEADER ── -->
-    <div class="flex flex-col md:flex-row justify-between items-center mb-8 gap-4 border-b border-slate-800 pb-6">
-        <div class="flex items-center gap-3">
-            <div class="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white font-bold text-xl shadow-lg">IC</div>
-            <div>
-                <h1 class="text-2xl font-bold text-white leading-none">Panel de Control</h1>
-                <p class="text-slate-500 text-sm mt-1">Gestión de Catálogo</p>
+    <div class="hero-gradient rounded-2xl p-6 mb-6 relative overflow-hidden">
+        <div class="absolute -top-10 -right-10 w-40 h-40 rounded-full opacity-20 animate-float pointer-events-none"
+             style="background: radial-gradient(circle, #F97316, transparent)"></div>
+        <div class="relative z-10 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <div class="flex items-center gap-3">
+                <div class="w-11 h-11 btn-warm rounded-xl flex items-center justify-center font-bold text-xl"
+                     style="font-family: var(--font-heading)">IC</div>
+                <div>
+                    <h1 class="text-2xl font-bold text-white leading-none" style="font-family: var(--font-heading)">Panel de Control</h1>
+                    <p class="text-sm mt-0.5" style="color: rgba(248,250,252,0.60)">Gestión de Catálogo</p>
+                </div>
+            </div>
+            <div class="flex gap-3">
+                <a href="index.php" target="_blank" class="glass-card px-4 py-2 rounded-lg text-sm font-semibold transition flex items-center gap-2 hover:opacity-80"
+                   style="color: var(--text-primary)">
+                    <i class="fa-solid fa-eye"></i> Ver Web
+                </a>
+                <a href="logout.php" class="px-4 py-2 rounded-lg text-sm font-semibold transition flex items-center gap-2"
+                   style="background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.25); color: #f87171">
+                    <i class="fa-solid fa-right-from-bracket"></i> Salir
+                </a>
             </div>
         </div>
-        <div class="flex gap-3">
-            <a href="index.php" target="_blank" class="bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2 rounded-lg text-sm font-semibold transition flex items-center gap-2">
-                <i class="fa-solid fa-eye"></i> Ver Web
-            </a>
-            <a href="logout.php" class="bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 px-4 py-2 rounded-lg text-sm font-semibold transition flex items-center gap-2">
-                <i class="fa-solid fa-right-from-bracket"></i> Salir
-            </a>
+    </div>
+
+    <!-- ── STAT CARDS ── -->
+    <div class="grid grid-cols-3 gap-4 mb-8">
+        <div class="stat-card">
+            <div class="stat-number"><?= $stat_flyers ?></div>
+            <div class="stat-label">Flyers</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number"><?= $stat_cats ?></div>
+            <div class="stat-label">Categorías</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number"><?= $stat_destacados ?></div>
+            <div class="stat-label">Destacados</div>
         </div>
     </div>
 
     <!-- ── ALERT ── -->
     <?php if ($msg): ?>
-    <div class="<?= $msg_type === 'success' ? 'bg-green-500/10 border-green-500/20 text-green-400' : 'bg-red-500/10 border-red-500/20 text-red-400' ?> border p-4 rounded-xl mb-8 flex items-center gap-3">
+    <div class="border p-4 rounded-xl mb-6 flex items-center gap-3 <?= $msg_type === 'success' ? 'text-green-400' : 'text-red-400' ?>"
+         style="background: <?= $msg_type === 'success' ? 'rgba(52,211,153,0.08)' : 'rgba(248,113,113,0.08)' ?>; border-color: <?= $msg_type === 'success' ? 'rgba(52,211,153,0.2)' : 'rgba(248,113,113,0.2)' ?>">
         <i class="fa-solid <?= $msg_type === 'success' ? 'fa-circle-check' : 'fa-circle-exclamation' ?> text-xl flex-shrink-0"></i>
         <span class="font-medium"><?= $msg ?></span>
     </div>
@@ -301,9 +400,9 @@ $COLORS = [
     <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-10">
 
         <!-- Subir Flyers -->
-        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
-            <h2 class="text-xl font-bold mb-6 flex items-center gap-2 text-white">
-                <span class="w-8 h-8 rounded-lg bg-blue-500/20 text-blue-400 flex items-center justify-center"><i class="fa-solid fa-images text-sm"></i></span>
+        <div class="glass-card p-6">
+            <h2 class="text-xl font-bold mb-6 flex items-center gap-2" style="font-family: var(--font-heading); color: var(--text-primary)">
+                <span class="w-8 h-8 rounded-lg flex items-center justify-center" style="background: rgba(249,115,22,0.15); color: var(--warm-400)"><i class="fa-solid fa-images text-sm"></i></span>
                 Publicar Flyers
             </h2>
             <form method="POST" enctype="multipart/form-data" class="space-y-5" id="uploadForm">
@@ -320,9 +419,23 @@ $COLORS = [
                     </div>
                 </div>
                 <div>
-                    <label class="block text-sm font-semibold text-slate-400 mb-2">Título / Precio</label>
-                    <input type="text" name="titulo" placeholder="Ej: Oferta de la Semana" class="w-full bg-slate-950 border border-slate-800 text-white p-3 rounded-xl focus:border-blue-500 outline-none" required>
-                    <p class="text-xs text-slate-500 mt-1">Se aplica a todas las fotos que subas ahora.</p>
+                    <label class="block text-sm font-semibold mb-2" style="color:var(--text-secondary)">Título</label>
+                    <input type="text" name="titulo" placeholder="Ej: Smart TV Samsung 65&quot;" class="admin-input" required>
+                    <p class="text-xs mt-1" style="color:var(--text-muted)">Se aplica a todas las fotos de esta subida.</p>
+                </div>
+                <div>
+                    <label class="block text-sm font-semibold mb-2" style="color:var(--text-secondary)">Descripción <span style="color:var(--text-muted)">(opcional)</span></label>
+                    <textarea name="descripcion" placeholder="Ej: 65 pulgadas, 4K, Smart TV, Android 13" maxlength="300" rows="2" class="admin-input resize-none" style="height:auto"></textarea>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-sm font-semibold mb-2" style="color:var(--text-secondary)">Precio cuota $</label>
+                        <input type="number" name="precio_cuota" placeholder="8500" min="0" step="0.01" class="admin-input">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-semibold mb-2" style="color:var(--text-secondary)">Cant. cuotas</label>
+                        <input type="number" name="cantidad_cuotas" placeholder="12" min="1" max="120" class="admin-input">
+                    </div>
                 </div>
                 <div>
                     <label class="block text-sm font-semibold text-slate-400 mb-2">Imágenes</label>
@@ -336,14 +449,14 @@ $COLORS = [
                     <p id="file-name" class="text-xs text-center text-blue-400 mt-2 h-4 truncate"></p>
                     <div id="file-warning" class="hidden mt-2 p-2 bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 text-xs rounded text-center"></div>
                 </div>
-                <button type="submit" name="subir_flyer" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3.5 rounded-xl transition active:scale-[0.98]">Publicar Todo</button>
+                <button type="submit" name="subir_flyer" class="btn-warm w-full py-3.5 font-bold" style="border-radius: var(--radius-sm)">Publicar Todo</button>
             </form>
         </div>
 
         <!-- Nueva Categoría (con picker) -->
-        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
-            <h2 class="text-xl font-bold mb-4 flex items-center gap-2 text-white">
-                <span class="w-8 h-8 rounded-lg bg-purple-500/20 text-purple-400 flex items-center justify-center"><i class="fa-solid fa-plus text-sm"></i></span>
+        <div class="glass-card p-6">
+            <h2 class="text-xl font-bold mb-4 flex items-center gap-2" style="font-family: var(--font-heading); color: var(--text-primary)">
+                <span class="w-8 h-8 rounded-lg flex items-center justify-center" style="background: rgba(168,85,247,0.15); color: #c084fc"><i class="fa-solid fa-plus text-sm"></i></span>
                 Nueva Categoría
             </h2>
             <form method="POST" class="space-y-4">
@@ -381,24 +494,24 @@ $COLORS = [
                     </div>
                     <span class="text-slate-400 text-xs">Vista previa del ícono en el catálogo</span>
                 </div>
-                <button type="submit" name="nueva_categoria" class="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-3 rounded-xl transition">Crear Categoría</button>
+                <button type="submit" name="nueva_categoria" class="btn-warm w-full py-3 font-bold" style="border-radius: var(--radius-sm); background: linear-gradient(135deg, #9333ea, #a855f7)">Crear Categoría</button>
             </form>
         </div>
     </div>
 
     <!-- ── SECCIÓN 2: GESTIÓN DE CATEGORÍAS ── -->
-    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl mb-10">
-        <h2 class="text-xl font-bold mb-6 flex items-center gap-2 text-white">
-            <span class="w-8 h-8 rounded-lg bg-teal-500/20 text-teal-400 flex items-center justify-center"><i class="fa-solid fa-folder-tree text-sm"></i></span>
+    <div class="glass-card p-6 mb-10">
+        <h2 class="text-xl font-bold mb-6 flex items-center gap-2" style="font-family: var(--font-heading); color: var(--text-primary)">
+            <span class="w-8 h-8 rounded-lg flex items-center justify-center" style="background: rgba(45,212,191,0.15); color: #2dd4bf"><i class="fa-solid fa-folder-tree text-sm"></i></span>
             Gestión de Categorías
-            <span class="ml-auto text-xs font-normal text-slate-500"><?= count($cats_list) ?> categorías</span>
+            <span class="ml-auto text-xs font-normal" style="color: var(--text-muted)"><?= count($cats_list) ?> categorías</span>
         </h2>
         <?php if (empty($cats_list)): ?>
             <p class="text-slate-600 text-sm text-center py-6">No hay categorías.</p>
         <?php else: ?>
         <div class="space-y-3">
             <?php foreach ($cats_list as $cat): ?>
-            <div class="flex items-center gap-3 p-3 bg-slate-950/60 border border-slate-800 rounded-xl hover:border-slate-700 transition">
+            <div class="flex items-center gap-3 p-3 rounded-xl transition" style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-subtle)" onmouseover="this.style.borderColor='var(--border-soft)'" onmouseout="this.style.borderColor='var(--border-subtle)'">
                 <div class="w-10 h-10 <?= htmlspecialchars($cat['color_bg']) ?> rounded-xl flex items-center justify-center <?= htmlspecialchars($cat['color_text']) ?> shrink-0">
                     <i class="<?= htmlspecialchars($cat['icono']) ?> text-lg"></i>
                 </div>
@@ -425,31 +538,71 @@ $COLORS = [
     </div>
 
     <!-- ── SECCIÓN 3: GESTIÓN DE FLYERS ── -->
-    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl mb-10">
+    <div class="glass-card p-6 mb-10" id="flyers-section">
         <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
-            <h2 class="text-xl font-bold flex items-center gap-2 text-white">
-                <span class="w-8 h-8 rounded-lg bg-orange-500/20 text-orange-400 flex items-center justify-center"><i class="fa-solid fa-photo-film text-sm"></i></span>
+            <h2 class="text-xl font-bold flex items-center gap-2" style="font-family: var(--font-heading); color: var(--text-primary)">
+                <span class="w-8 h-8 rounded-lg flex items-center justify-center" style="background: rgba(249,115,22,0.15); color: var(--warm-400)"><i class="fa-solid fa-photo-film text-sm"></i></span>
                 Gestión de Flyers
-                <span class="text-xs font-normal text-slate-500"><?= $total_fly ?> total</span>
+                <span class="text-xs font-normal" style="color: var(--text-muted)"><?= $total_fly ?> total</span>
             </h2>
-            <!-- Filtro por categoría -->
-            <form method="GET" class="flex items-center gap-2">
-                <select name="cat" onchange="this.form.submit()" class="bg-slate-950 border border-slate-800 text-white text-sm p-2 rounded-lg outline-none focus:border-orange-500">
+            <?php if ($cat_filter): ?>
+            <p class="text-xs mt-1" style="color: var(--text-muted)"><i class="fa-solid fa-grip-dots-vertical mr-1"></i> Arrastrá los items para reordenar</p>
+            <?php endif; ?>
+            <!-- Filtros -->
+            <form method="GET" class="flex flex-wrap items-center gap-2">
+                <input type="text" name="q" value="<?= htmlspecialchars($q_search) ?>" placeholder="Buscar producto..."
+                       class="admin-input text-sm py-2 px-3 rounded-lg" style="width:180px"
+                       onchange="this.form.submit()">
+                <select name="cat" onchange="this.form.submit()" class="admin-input text-sm py-2 px-3 rounded-lg" style="width:auto">
                     <option value="0" <?= !$cat_filter ? 'selected' : '' ?>>Todas las categorías</option>
                     <?php foreach ($cats_list as $c): ?>
                     <option value="<?= $c['id'] ?>" <?= $cat_filter == $c['id'] ? 'selected' : '' ?>><?= htmlspecialchars($c['nombre']) ?></option>
                     <?php endforeach; ?>
                 </select>
-                <?php if ($cat_filter): ?><a href="admin.php" class="text-xs text-slate-500 hover:text-white transition">× Limpiar</a><?php endif; ?>
+                <select name="vis" onchange="this.form.submit()" class="admin-input text-sm py-2 px-3 rounded-lg" style="width:auto">
+                    <option value="-1" <?= $vis_filter < 0 ? 'selected' : '' ?>>Todos</option>
+                    <option value="1"  <?= $vis_filter === 1 ? 'selected' : '' ?>>Visibles</option>
+                    <option value="0"  <?= $vis_filter === 0 ? 'selected' : '' ?>>Ocultos</option>
+                </select>
+                <?php if ($cat_filter || $q_search || $vis_filter >= 0): ?>
+                <a href="admin.php" class="text-xs hover:opacity-70 transition" style="color:var(--text-muted)">× Limpiar</a>
+                <?php endif; ?>
             </form>
         </div>
 
         <?php if (!$all_flyers || $all_flyers->num_rows === 0): ?>
             <p class="text-slate-600 text-sm text-center py-10">No hay flyers en esta categoría.</p>
         <?php else: ?>
-        <div class="space-y-2">
+        <!-- Bulk toolbar -->
+        <form method="POST" id="bulk-form">
+        <div class="flex flex-wrap items-center gap-2 mb-4 p-3 rounded-xl" style="background:rgba(255,255,255,0.03);border:1px solid var(--border-subtle)" id="bulk-toolbar">
+            <label class="flex items-center gap-2 text-sm cursor-pointer" style="color:var(--text-secondary)">
+                <input type="checkbox" id="sel-all" class="accent-orange-500 w-4 h-4">
+                Seleccionar todo
+            </label>
+            <span class="text-xs px-2" style="color:var(--text-muted)">|</span>
+            <button type="submit" name="bulk_action" value="hide" class="text-xs px-3 py-1.5 rounded-lg transition" style="background:rgba(255,255,255,0.06);color:var(--text-secondary)" onclick="return bulkConfirm('ocultar')">
+                <i class="fa-solid fa-eye-slash mr-1"></i>Ocultar
+            </button>
+            <button type="submit" name="bulk_action" value="show" class="text-xs px-3 py-1.5 rounded-lg transition" style="background:rgba(255,255,255,0.06);color:var(--text-secondary)">
+                <i class="fa-solid fa-eye mr-1"></i>Mostrar
+            </button>
+            <button type="submit" name="bulk_action" value="feature" class="text-xs px-3 py-1.5 rounded-lg transition" style="background:rgba(251,191,36,0.1);color:#fbbf24">
+                <i class="fa-solid fa-star mr-1"></i>Destacar
+            </button>
+            <button type="submit" name="bulk_action" value="delete" class="text-xs px-3 py-1.5 rounded-lg transition" style="background:rgba(248,113,113,0.1);color:#f87171" onclick="return bulkConfirm('eliminar')">
+                <i class="fa-solid fa-trash mr-1"></i>Eliminar
+            </button>
+        </div>
+
+        <div class="space-y-2" id="flyers-list">
             <?php while ($f = $all_flyers->fetch_assoc()): ?>
-            <div class="flex items-center gap-3 p-2.5 bg-slate-950/50 border border-slate-800 rounded-xl hover:border-slate-700 transition group">
+            <div class="draggable-item flex items-center gap-3 p-2.5 rounded-xl transition group <?= $f['visible'] ? '' : 'opacity-50' ?>"
+                 data-flyer-id="<?= $f['id'] ?>"
+                 draggable="true"
+                 style="background: rgba(255,255,255,0.03); border: 1px solid <?= $f['visible'] ? 'var(--border-subtle)' : 'rgba(248,113,113,0.2)' ?>">
+                <!-- Checkbox bulk -->
+                <input type="checkbox" name="sel[]" value="<?= $f['id'] ?>" class="sel-check accent-orange-500 w-4 h-4 shrink-0">
                 <!-- Thumbnail -->
                 <div class="w-12 h-12 rounded-lg bg-slate-800 bg-cover bg-center shrink-0 border border-slate-700 cursor-pointer"
                      style="background-image:url('<?= htmlspecialchars($f['imagen_url']) ?>');"
@@ -489,6 +642,15 @@ $COLORS = [
                     <?php else: ?>
                     <span class="text-xs text-slate-600 hidden sm:flex items-center px-2">Filtrá por cat. para reordenar</span>
                     <?php endif; ?>
+                    <!-- Visible -->
+                    <form method="POST" class="inline">
+                        <input type="hidden" name="flyer_id" value="<?= $f['id'] ?>">
+                        <button type="submit" name="toggle_visible"
+                            class="w-8 h-8 <?= $f['visible'] ? 'bg-slate-800 text-slate-400 hover:text-white' : 'bg-red-500/20 text-red-400' ?> rounded-lg transition text-xs"
+                            title="<?= $f['visible'] ? 'Ocultar del catálogo' : 'Mostrar en catálogo' ?>">
+                            <i class="fa-solid <?= $f['visible'] ? 'fa-eye' : 'fa-eye-slash' ?>"></i>
+                        </button>
+                    </form>
                     <!-- Destacado -->
                     <form method="POST" class="inline">
                         <input type="hidden" name="flyer_id" value="<?= $f['id'] ?>">
@@ -508,8 +670,8 @@ $COLORS = [
                         </button>
                     </form>
                     <!-- Editar título -->
-                    <button onclick="openEditFlyer(<?= $f['id'] ?>, '<?= htmlspecialchars(addslashes($f['titulo'])) ?>')"
-                        class="w-8 h-8 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded-lg transition text-xs" title="Editar título">
+                    <button onclick="openEditFlyer(<?= $f['id'] ?>, '<?= htmlspecialchars(addslashes($f['titulo'])) ?>', '<?= htmlspecialchars(addslashes($f['descripcion'] ?? '')) ?>', '<?= $f['precio_cuota'] ?? '' ?>', '<?= $f['cantidad_cuotas'] ?? '' ?>')"
+                        class="w-8 h-8 rounded-lg transition text-xs" style="background:rgba(99,102,241,0.15);color:#818cf8" title="Editar producto">
                         <i class="fa-solid fa-pen-to-square"></i>
                     </button>
                     <!-- Eliminar -->
@@ -523,6 +685,9 @@ $COLORS = [
             </div>
             <?php endwhile; ?>
         </div>
+
+        </div><!-- /flyers-list -->
+        </form><!-- /bulk-form -->
 
         <!-- Paginación -->
         <?php if ($total_pages > 1): ?>
@@ -539,36 +704,51 @@ $COLORS = [
         <?php endif; ?>
     </div>
 
-    <div class="text-center text-slate-600 text-sm pb-8">
+    <div class="text-center text-sm pb-8" style="color: var(--text-muted)">
         &copy; <?= date("Y") ?> Imperio Comercial — Panel de Administración
     </div>
 </div>
 
 <!-- ── MODAL: EDITAR FLYER ── -->
-<div id="modal-flyer" class="fixed inset-0 z-50 hidden items-center justify-center p-4 modal-bg bg-black/70">
-    <div class="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-md shadow-2xl">
-        <h3 class="text-lg font-bold text-white mb-4 flex items-center gap-2">
-            <i class="fa-solid fa-pen-to-square text-blue-400"></i> Editar Título del Flyer
+<div id="modal-flyer" class="fixed inset-0 z-50 hidden items-center justify-center p-4 modal-bg" style="background: rgba(0,0,0,0.7)">
+    <div class="glass-card p-6 w-full max-w-md shadow-2xl" style="border-color: var(--border-warm)">
+        <h3 class="text-lg font-bold mb-4 flex items-center gap-2" style="font-family: var(--font-heading); color: var(--text-primary)">
+            <i class="fa-solid fa-pen-to-square" style="color: var(--warm-400)"></i> Editar Título del Flyer
         </h3>
         <form method="POST" class="space-y-4">
             <input type="hidden" name="flyer_id" id="ef_id">
             <div>
-                <label class="block text-sm font-semibold text-slate-400 mb-2">Nuevo título</label>
-                <input type="text" name="titulo" id="ef_titulo" class="w-full bg-slate-950 border border-slate-700 text-white p-3 rounded-xl focus:border-blue-500 outline-none" required>
+                <label class="block text-sm font-semibold mb-2" style="color: var(--text-secondary)">Título</label>
+                <input type="text" name="titulo" id="ef_titulo" class="admin-input" required>
+            </div>
+            <div>
+                <label class="block text-sm font-semibold mb-2" style="color: var(--text-secondary)">Descripción <span style="color:var(--text-muted)">(opcional)</span></label>
+                <textarea name="descripcion" id="ef_desc" maxlength="300" rows="2" class="admin-input resize-none" style="height:auto" placeholder="Ej: 65 pulgadas, 4K, Smart TV"></textarea>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-sm font-semibold mb-2" style="color: var(--text-secondary)">Precio cuota $</label>
+                    <input type="number" name="precio_cuota" id="ef_cuota" placeholder="8500" min="0" step="0.01" class="admin-input">
+                </div>
+                <div>
+                    <label class="block text-sm font-semibold mb-2" style="color: var(--text-secondary)">Cant. cuotas</label>
+                    <input type="number" name="cantidad_cuotas" id="ef_cuotas" placeholder="12" min="1" max="120" class="admin-input">
+                </div>
             </div>
             <div class="flex gap-3">
-                <button type="button" onclick="closeModal('modal-flyer')" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 py-3 rounded-xl font-semibold transition">Cancelar</button>
-                <button type="submit" name="editar_flyer" class="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-3 rounded-xl font-bold transition">Guardar</button>
+                <button type="button" onclick="closeModal('modal-flyer')" class="flex-1 py-3 rounded-xl font-semibold transition"
+                        style="background: var(--bg-card); border: 1px solid var(--border-soft); color: var(--text-secondary)">Cancelar</button>
+                <button type="submit" name="editar_flyer" class="flex-1 btn-warm py-3 font-bold">Guardar</button>
             </div>
         </form>
     </div>
 </div>
 
 <!-- ── MODAL: EDITAR CATEGORÍA ── -->
-<div id="modal-cat" class="fixed inset-0 z-50 hidden items-center justify-center p-4 modal-bg bg-black/70">
-    <div class="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto">
-        <h3 class="text-lg font-bold text-white mb-4 flex items-center gap-2">
-            <i class="fa-solid fa-folder-pen text-teal-400"></i> Editar Categoría
+<div id="modal-cat" class="fixed inset-0 z-50 hidden items-center justify-center p-4 modal-bg" style="background: rgba(0,0,0,0.7)">
+    <div class="glass-card p-6 w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto" style="border-color: rgba(168,85,247,0.4)">
+        <h3 class="text-lg font-bold mb-4 flex items-center gap-2" style="font-family: var(--font-heading); color: var(--text-primary)">
+            <i class="fa-solid fa-folder-pen" style="color: #2dd4bf"></i> Editar Categoría
         </h3>
         <form method="POST" class="space-y-4">
             <input type="hidden" name="cat_id" id="ec_id">
@@ -607,14 +787,80 @@ $COLORS = [
                 <span class="text-slate-400 text-xs">Vista previa</span>
             </div>
             <div class="flex gap-3">
-                <button type="button" onclick="closeModal('modal-cat')" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 py-3 rounded-xl font-semibold transition">Cancelar</button>
-                <button type="submit" name="editar_categoria" class="flex-1 bg-teal-600 hover:bg-teal-500 text-white py-3 rounded-xl font-bold transition">Guardar</button>
+                <button type="button" onclick="closeModal('modal-cat')" class="flex-1 py-3 rounded-xl font-semibold transition"
+                        style="background: var(--bg-card); border: 1px solid var(--border-soft); color: var(--text-secondary)">Cancelar</button>
+                <button type="submit" name="editar_categoria" class="flex-1 btn-warm py-3 font-bold"
+                        style="background: linear-gradient(135deg, #0d9488, #2dd4bf)">Guardar</button>
             </div>
         </form>
     </div>
 </div>
 
 <script>
+// ── Drag & Drop Reordenamiento ─────────────────────────────────
+(function() {
+    let dragSrc = null;
+
+    function showToastAdmin(msg) {
+        const t = document.createElement('div');
+        t.textContent = msg;
+        t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:linear-gradient(135deg,#F97316,#FBBF24);color:white;padding:10px 24px;border-radius:999px;font-weight:600;font-size:14px;z-index:9999;transition:all 0.3s cubic-bezier(0.34,1.56,0.64,1);opacity:0';
+        document.body.appendChild(t);
+        requestAnimationFrame(() => { t.style.opacity='1'; t.style.transform='translateX(-50%) translateY(0)'; });
+        setTimeout(() => { t.style.opacity='0'; t.style.transform='translateX(-50%) translateY(10px)'; setTimeout(() => t.remove(), 300); }, 2200);
+    }
+
+    document.addEventListener('dragstart', function(e) {
+        const item = e.target.closest('[data-flyer-id]');
+        if (!item) return;
+        dragSrc = item;
+        setTimeout(() => item.classList.add('dragging'), 0);
+        e.dataTransfer.effectAllowed = 'move';
+    });
+
+    document.addEventListener('dragend', function() {
+        if (dragSrc) { dragSrc.classList.remove('dragging'); dragSrc = null; }
+        document.querySelectorAll('[data-flyer-id]').forEach(el => el.classList.remove('drag-over'));
+    });
+
+    document.addEventListener('dragover', function(e) {
+        const item = e.target.closest('[data-flyer-id]');
+        if (!item || item === dragSrc) return;
+        e.preventDefault();
+        document.querySelectorAll('[data-flyer-id]').forEach(el => el.classList.remove('drag-over'));
+        item.classList.add('drag-over');
+    });
+
+    document.addEventListener('dragleave', function(e) {
+        const item = e.target.closest('[data-flyer-id]');
+        if (item) item.classList.remove('drag-over');
+    });
+
+    document.addEventListener('drop', function(e) {
+        const target = e.target.closest('[data-flyer-id]');
+        if (!target || !dragSrc || target === dragSrc) return;
+        e.preventDefault();
+        target.classList.remove('drag-over');
+        dragSrc.classList.remove('dragging');
+
+        const parent = target.parentNode;
+        const items  = [...parent.children];
+        const srcIdx = items.indexOf(dragSrc);
+        const tgtIdx = items.indexOf(target);
+        if (srcIdx < tgtIdx) target.after(dragSrc);
+        else target.before(dragSrc);
+
+        const ids = [...parent.querySelectorAll('[data-flyer-id]')].map(el => el.dataset.flyerId).join(',');
+        const fd  = new URLSearchParams({ action: 'reorder', ids });
+        fetch('admin.php', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: fd })
+            .then(r => r.json())
+            .then(d => { if (d.success) showToastAdmin('Orden guardado ✓'); })
+            .catch(() => {});
+
+        dragSrc = null;
+    });
+})();
+
 // ── Validación de archivos ──────────────────────────────────────
 const fileInput = document.getElementById('fileInput');
 if (fileInput) {
@@ -674,10 +920,26 @@ function closeModal(id) {
     });
 });
 
-function openEditFlyer(id, titulo) {
+function openEditFlyer(id, titulo, desc, cuota, cuotas) {
     document.getElementById('ef_id').value     = id;
     document.getElementById('ef_titulo').value = titulo;
+    document.getElementById('ef_desc').value   = desc   || '';
+    document.getElementById('ef_cuota').value  = cuota  || '';
+    document.getElementById('ef_cuotas').value = cuotas || '';
     openModal('modal-flyer');
+}
+
+// ── Bulk select ────────────────────────────────────────────────
+const selAll = document.getElementById('sel-all');
+if (selAll) {
+    selAll.addEventListener('change', function() {
+        document.querySelectorAll('.sel-check').forEach(cb => cb.checked = this.checked);
+    });
+}
+function bulkConfirm(accion) {
+    const n = document.querySelectorAll('.sel-check:checked').length;
+    if (n === 0) { alert('Seleccioná al menos un producto.'); return false; }
+    return confirm(`¿${accion.charAt(0).toUpperCase() + accion.slice(1)} ${n} producto(s)?`);
 }
 
 function openEditCat(id, nombre, icono, colorBg, colorText) {
